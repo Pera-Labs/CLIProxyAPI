@@ -19,6 +19,25 @@ func resetFirstAuth(id string, weeklyReset time.Time) *Auth {
 	return auth
 }
 
+func reservedAuth(id string, weeklyReset time.Time, fiveHourUtilization string) *Auth {
+	auth := resetFirstAuth(id, weeklyReset)
+	auth.Metadata = map[string]any{"quota_reserve_percent": float64(30)}
+	auth.Quota.Signals["Anthropic-Ratelimit-Unified-5h-Utilization"] = fiveHourUtilization
+	return auth
+}
+
+func TestQuotaReserveBlocksAvailability(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	if IsAuthAvailableForModel(reservedAuth("a", now.Add(time.Hour), "0.70"), "claude-sonnet", now) {
+		t.Fatal("credential at its reserve floor is available, want blocked")
+	}
+	if !IsAuthAvailableForModel(reservedAuth("a", now.Add(time.Hour), "0.69"), "claude-sonnet", now) {
+		t.Fatal("credential above its reserve floor is blocked, want available")
+	}
+}
+
 func TestResetFirstSelectorPick(t *testing.T) {
 	t.Parallel()
 
@@ -50,6 +69,8 @@ func TestResetFirstSelectorPick(t *testing.T) {
 		{"stale reset counts as unobserved", []*Auth{resetFirstAuth("a", tomorrow), resetFirstAuth("b", now.Add(-time.Hour))}, "b"},
 		{"exhausted credential is skipped", []*Auth{exhausted, resetFirstAuth("b", inFourDays)}, "b"},
 		{"representative reset is a fallback", []*Auth{resetFirstAuth("a", inFourDays), representativeOnly}, "b-representative"},
+		{"reserve skips a credential near its floor", []*Auth{reservedAuth("a", tomorrow, "0.71"), resetFirstAuth("b", inFourDays)}, "b"},
+		{"reserve allows a credential above its floor", []*Auth{reservedAuth("a", tomorrow, "0.69"), resetFirstAuth("b", inFourDays)}, "a"},
 		{"ties keep deterministic order", []*Auth{resetFirstAuth("b", tomorrow), resetFirstAuth("a", tomorrow)}, "a"},
 	}
 	for _, tc := range cases {

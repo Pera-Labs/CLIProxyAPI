@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,18 @@ import (
 var resetFirstSignalKeys = []string{
 	"anthropic-ratelimit-unified-7d-reset",
 	"anthropic-ratelimit-unified-reset",
+}
+
+// quotaReserveMetadataKey names the auth file field holding the percentage of
+// quota the hub must leave unused, for a subscription shared with a person
+// who uses it directly.
+const quotaReserveMetadataKey = "quota_reserve_percent"
+
+// quotaReserveUtilizationKeys lists the observed utilization headers (0..1)
+// checked against a credential's reserve.
+var quotaReserveUtilizationKeys = []string{
+	"anthropic-ratelimit-unified-5h-utilization",
+	"anthropic-ratelimit-unified-7d-utilization",
 }
 
 // ResetFirstSelector spends the available credential whose quota window resets
@@ -70,4 +83,57 @@ func observedQuotaResetAt(auth *Auth, now time.Time) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// quotaReserveReached reports whether the credential's last observed
+// utilization in any window leaves no more than its configured reserve.
+func quotaReserveReached(auth *Auth) bool {
+	reserve, ok := quotaReservePercent(auth)
+	if !ok {
+		return false
+	}
+	limit := 1 - reserve/100
+	for _, key := range quotaReserveUtilizationKeys {
+		for name, value := range auth.Quota.Signals {
+			if !strings.EqualFold(name, key) {
+				continue
+			}
+			used, errParse := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if errParse == nil && used >= limit {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func quotaReservePercent(auth *Auth) (float64, bool) {
+	if auth == nil || auth.Metadata == nil {
+		return 0, false
+	}
+	var reserve float64
+	switch value := auth.Metadata[quotaReserveMetadataKey].(type) {
+	case float64:
+		reserve = value
+	case int:
+		reserve = float64(value)
+	case json.Number:
+		parsed, errParse := value.Float64()
+		if errParse != nil {
+			return 0, false
+		}
+		reserve = parsed
+	case string:
+		parsed, errParse := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if errParse != nil {
+			return 0, false
+		}
+		reserve = parsed
+	default:
+		return 0, false
+	}
+	if reserve <= 0 || reserve >= 100 {
+		return 0, false
+	}
+	return reserve, true
 }
