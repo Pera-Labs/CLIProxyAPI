@@ -23,11 +23,12 @@ var resetFirstSignalKeys = []string{
 // who uses it directly.
 const quotaReserveMetadataKey = "quota_reserve_percent"
 
-// quotaReserveUtilizationKeys lists the observed utilization headers (0..1)
-// checked against a credential's reserve.
-var quotaReserveUtilizationKeys = []string{
-	"anthropic-ratelimit-unified-5h-utilization",
-	"anthropic-ratelimit-unified-7d-utilization",
+var quotaReserveWindows = []struct {
+	utilizationKey string
+	reserveKey     string
+}{
+	{"anthropic-ratelimit-unified-5h-utilization", "quota_reserve_5h_percent"},
+	{"anthropic-ratelimit-unified-7d-utilization", "quota_reserve_7d_percent"},
 }
 
 // ResetFirstSelector spends the available credential whose quota window resets
@@ -88,14 +89,20 @@ func observedQuotaResetAt(auth *Auth, now time.Time) (time.Time, bool) {
 // quotaReserveReached reports whether the credential's last observed
 // utilization in any window leaves no more than its configured reserve.
 func quotaReserveReached(auth *Auth) bool {
-	reserve, ok := quotaReservePercent(auth)
-	if !ok {
+	if auth == nil {
 		return false
 	}
-	limit := 1 - reserve/100
-	for _, key := range quotaReserveUtilizationKeys {
+	for _, window := range quotaReserveWindows {
+		reserve, ok := quotaReservePercent(auth, window.reserveKey)
+		if !ok {
+			reserve, ok = quotaReservePercent(auth, quotaReserveMetadataKey)
+		}
+		if !ok {
+			continue
+		}
+		limit := 1 - reserve/100
 		for name, value := range auth.Quota.Signals {
-			if !strings.EqualFold(name, key) {
+			if !strings.EqualFold(name, window.utilizationKey) {
 				continue
 			}
 			used, errParse := strconv.ParseFloat(strings.TrimSpace(value), 64)
@@ -107,12 +114,12 @@ func quotaReserveReached(auth *Auth) bool {
 	return false
 }
 
-func quotaReservePercent(auth *Auth) (float64, bool) {
+func quotaReservePercent(auth *Auth, key string) (float64, bool) {
 	if auth == nil || auth.Metadata == nil {
 		return 0, false
 	}
 	var reserve float64
-	switch value := auth.Metadata[quotaReserveMetadataKey].(type) {
+	switch value := auth.Metadata[key].(type) {
 	case float64:
 		reserve = value
 	case int:
@@ -132,7 +139,7 @@ func quotaReservePercent(auth *Auth) (float64, bool) {
 	default:
 		return 0, false
 	}
-	if reserve <= 0 || reserve >= 100 {
+	if !(reserve > 0 && reserve < 100) {
 		return 0, false
 	}
 	return reserve, true

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"testing"
 	"time"
@@ -30,11 +31,51 @@ func TestQuotaReserveBlocksAvailability(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	if IsAuthAvailableForModel(reservedAuth("a", now.Add(time.Hour), "0.70"), "claude-sonnet", now) {
-		t.Fatal("credential at its reserve floor is available, want blocked")
+	cases := []struct {
+		name            string
+		fiveHour        string
+		weekly          string
+		reserve         any
+		fiveHourReserve any
+		weeklyReserve   any
+		wantAvailable   bool
+	}{
+		{"legacy five-hour floor", "0.70", "0.26", 30, nil, nil, false},
+		{"legacy below five-hour floor", "0.69", "0.26", 30, nil, nil, true},
+		{"legacy weekly floor", "0.20", "0.70", 30, nil, nil, false},
+		{"five-hour override frees current usage", "0.70", "0.26", 30, 10, nil, true},
+		{"both windows below their floors", "0.89", "0.69", 30, 10, nil, true},
+		{"five-hour override floor", "0.90", "0.26", 30, 10, nil, false},
+		{"weekly default remains protected", "0.70", "0.70", 30, 10, nil, false},
+		{"weekly override below floor", "0.20", "0.79", 30, nil, 20, true},
+		{"weekly override floor", "0.20", "0.80", 30, nil, 20, false},
+		{"standalone five-hour override", "0.90", "0.26", nil, 10, nil, false},
+		{"no reserve preserves availability", "0.95", "0.95", nil, nil, nil, true},
+		{"string default", "0.70", "0.26", "30", nil, nil, false},
+		{"json number default", "0.70", "0.26", json.Number("30"), nil, nil, false},
+		{"float override", "0.70", "0.26", 30, float64(10), nil, true},
+		{"string override", "0.70", "0.26", 30, "10", nil, true},
+		{"json number override", "0.70", "0.26", 30, json.Number("10"), nil, true},
+		{"invalid override falls back", "0.70", "0.26", 30, "invalid", nil, false},
+		{"zero override falls back", "0.70", "0.26", 30, 0, nil, false},
+		{"negative override falls back", "0.70", "0.26", 30, -10, nil, false},
+		{"hundred override falls back", "0.70", "0.26", 30, 100, nil, false},
+		{"nonfinite override falls back", "0.70", "0.26", 30, "NaN", nil, false},
+		{"invalid weekly override falls back", "0.20", "0.70", 30, 10, "invalid", false},
 	}
-	if !IsAuthAvailableForModel(reservedAuth("a", now.Add(time.Hour), "0.69"), "claude-sonnet", now) {
-		t.Fatal("credential above its reserve floor is blocked, want available")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := reservedAuth("a", now.Add(time.Hour), tc.fiveHour)
+			auth.Metadata = map[string]any{
+				"quota_reserve_percent":    tc.reserve,
+				"quota_reserve_5h_percent": tc.fiveHourReserve,
+				"quota_reserve_7d_percent": tc.weeklyReserve,
+			}
+			auth.Quota.Signals["Anthropic-Ratelimit-Unified-7d-Utilization"] = tc.weekly
+			if got := IsAuthAvailableForModel(auth, "claude-opus-5-5", now); got != tc.wantAvailable {
+				t.Fatalf("available = %v, want %v", got, tc.wantAvailable)
+			}
+		})
 	}
 }
 
