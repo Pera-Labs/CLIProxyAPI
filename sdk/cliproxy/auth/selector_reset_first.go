@@ -86,11 +86,29 @@ func observedQuotaResetAt(auth *Auth, now time.Time) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+type quotaReserveRouteKey struct{}
+
+// withQuotaReserveRoute keeps the requested model visible to the reserve check,
+// which only sees the prefix-stripped model.
+func withQuotaReserveRoute(ctx context.Context, routeModel string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, quotaReserveRouteKey{}, routeModel)
+}
+
 // quotaReserveReached reports whether the credential's last observed
 // utilization in any window leaves no more than its configured reserve.
-func quotaReserveReached(auth *Auth) bool {
+// The reserve guards pooled routing only: naming the credential's prefix
+// spends it regardless.
+func quotaReserveReached(ctx context.Context, auth *Auth) bool {
 	if auth == nil {
 		return false
+	}
+	if prefix := strings.TrimSpace(auth.Prefix); prefix != "" && ctx != nil {
+		if route, _ := ctx.Value(quotaReserveRouteKey{}).(string); strings.HasPrefix(strings.TrimSpace(route), prefix+"/") {
+			return false
+		}
 	}
 	for _, window := range quotaReserveWindows {
 		reserve, ok := quotaReservePercent(auth, window.reserveKey)

@@ -1259,7 +1259,7 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
-	if quotaReserveReached(auth) {
+	if quotaReserveReached(ctx, auth) {
 		return true, blockReasonOther, time.Time{}
 	}
 	if codexRefreshMissingAccessForRequest(ctx, auth, clientHeaders...) {

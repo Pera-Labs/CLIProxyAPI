@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -124,5 +125,36 @@ func TestResetFirstSelectorPick(t *testing.T) {
 				t.Fatalf("Pick() auth.ID = %q, want %q", got.ID, tc.want)
 			}
 		})
+	}
+}
+
+func TestQuotaReserveSparesPrefixPinnedRequests(t *testing.T) {
+	manager := NewManager(nil, &ResetFirstSelector{}, nil)
+	manager.executors["claude"] = schedulerTestExecutor{provider: "claude"}
+	now := time.Now()
+	reserved := reservedAuth("reserve-melisa", now.Add(time.Hour), "0.95")
+	reserved.Provider, reserved.Prefix = "claude", "melisa"
+	open := resetFirstAuth("reserve-anil", now.Add(48*time.Hour))
+	open.Provider, open.Prefix = "claude", "anil"
+	for _, auth := range []*Auth{reserved, open} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+		}
+		reg := registry.GetGlobalRegistry()
+		reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: "claude-opus-5-5"}, {ID: auth.Prefix + "/claude-opus-5-5"}})
+		t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	}
+
+	for _, tc := range []struct{ model, want string }{
+		{"claude-opus-5-5", "reserve-anil"},
+		{"melisa/claude-opus-5-5", "reserve-melisa"},
+	} {
+		got, _, _, errPick := manager.pickNextMixed(context.Background(), []string{"claude"}, tc.model, cliproxyexecutor.Options{}, nil)
+		if errPick != nil {
+			t.Fatalf("pickNextMixed(%s) error = %v", tc.model, errPick)
+		}
+		if got.ID != tc.want {
+			t.Fatalf("pickNextMixed(%s) = %s, want %s", tc.model, got.ID, tc.want)
+		}
 	}
 }

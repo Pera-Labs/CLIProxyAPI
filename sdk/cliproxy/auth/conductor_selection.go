@@ -2244,6 +2244,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		return auth, exec, err
 	}
 
+	ctx = withQuotaReserveRoute(ctx, model)
 	opts.EnsureMetadata()
 	clearSchedulerSelectionID(opts.Metadata)
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
@@ -2683,6 +2684,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
 
+	ctx = withQuotaReserveRoute(ctx, model)
 	opts.EnsureMetadata()
 	clearSchedulerSelectionID(opts.Metadata)
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
