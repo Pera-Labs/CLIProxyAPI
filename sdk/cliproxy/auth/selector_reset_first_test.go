@@ -129,8 +129,17 @@ func TestResetFirstSelectorPick(t *testing.T) {
 }
 
 func TestQuotaReserveSparesPrefixPinnedRequests(t *testing.T) {
-	manager := NewManager(nil, &ResetFirstSelector{}, nil)
-	manager.executors["claude"] = schedulerTestExecutor{provider: "claude"}
+	for name, selector := range map[string]Selector{
+		"reset-first":               &ResetFirstSelector{},
+		"session affinity fallback": NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &ResetFirstSelector{}}),
+	} {
+		t.Run(name, func(t *testing.T) { assertQuotaReserveSparesPrefixPinnedRequests(t, selector) })
+	}
+}
+
+func assertQuotaReserveSparesPrefixPinnedRequests(t *testing.T, selector Selector) {
+	manager := NewManager(nil, selector, nil)
+	manager.executors["claude"] = authEchoExecutor{schedulerTestExecutor{provider: "claude"}}
 	now := time.Now()
 	reserved := reservedAuth("reserve-melisa", now.Add(time.Hour), "0.95")
 	reserved.Provider, reserved.Prefix = "claude", "melisa"
@@ -149,12 +158,18 @@ func TestQuotaReserveSparesPrefixPinnedRequests(t *testing.T) {
 		{"claude-opus-5-5", "reserve-anil"},
 		{"melisa/claude-opus-5-5", "reserve-melisa"},
 	} {
-		got, _, _, errPick := manager.pickNextMixed(context.Background(), []string{"claude"}, tc.model, cliproxyexecutor.Options{}, nil)
-		if errPick != nil {
-			t.Fatalf("pickNextMixed(%s) error = %v", tc.model, errPick)
+		resp, errExec := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: tc.model}, cliproxyexecutor.Options{})
+		if errExec != nil {
+			t.Fatalf("Execute(%s) error = %v", tc.model, errExec)
 		}
-		if got.ID != tc.want {
-			t.Fatalf("pickNextMixed(%s) = %s, want %s", tc.model, got.ID, tc.want)
+		if got := string(resp.Payload); got != tc.want {
+			t.Fatalf("Execute(%s) ran on %s, want %s", tc.model, got, tc.want)
 		}
 	}
+}
+
+type authEchoExecutor struct{ schedulerTestExecutor }
+
+func (authEchoExecutor) Execute(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{Payload: []byte(auth.ID)}, nil
 }
